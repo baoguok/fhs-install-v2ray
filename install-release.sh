@@ -217,7 +217,7 @@ install_software() {
 }
 
 get_current_version() {
-  if /usr/local/bin/v2ray -version >/dev/null 2>&1;then
+  if /usr/local/bin/v2ray -version > /dev/null 2>&1; then
     VERSION="$(/usr/local/bin/v2ray -version | awk 'NR==1 {print $2}')"
   else
     VERSION="$(/usr/local/bin/v2ray version | awk 'NR==1 {print $2}')"
@@ -243,9 +243,15 @@ get_version() {
   fi
   # Get V2Ray release version number
   TMP_FILE="$(mktemp)"
-  if ! curl -x "${PROXY}" -sS -H "Accept: application/vnd.github.v3+json" -o "$TMP_FILE" 'https://api.github.com/repos/v2fly/v2ray-core/releases/latest'; then
+  if ! curl -x "${PROXY}" -sS -i -H "Accept: application/vnd.github.v3+json" -o "$TMP_FILE" 'https://api.github.com/repos/v2fly/v2ray-core/releases/latest'; then
     "rm" "$TMP_FILE"
     echo 'error: Failed to get release list, please check your network.'
+    exit 1
+  fi
+  HTTP_STATUS_CODE=$(awk 'NR==1 {print $2}' "$TMP_FILE")
+  if [[ $HTTP_STATUS_CODE -lt 200 ]] || [[ $HTTP_STATUS_CODE -gt 299 ]]; then
+    "rm" "$TMP_FILE"
+    echo "error: Failed to get release list, GitHub API response code: $HTTP_STATUS_CODE"
     exit 1
   fi
   RELEASE_LATEST="$(sed 'y/,/\n/' "$TMP_FILE" | grep 'tag_name' | awk -F '"' '{print $4}')"
@@ -302,14 +308,12 @@ download_v2ray() {
   fi
 
   # Verification of V2Ray archive
-  for LISTSUM in 'md5' 'sha1' 'sha256' 'sha512'; do
-    SUM="$(${LISTSUM}sum "$ZIP_FILE" | sed 's/ .*//')"
-    CHECKSUM="$(grep ${LISTSUM^^} "$ZIP_FILE".dgst | grep "$SUM" -o -a | uniq)"
-    if [[ "$SUM" != "$CHECKSUM" ]]; then
-      echo 'error: Check failed! Please check your network or try again.'
-      return 1
-    fi
-  done
+  CHECKSUM=$(awk -F '= ' '/256=/ {print $2}' < "${ZIP_FILE}.dgst")
+  LOCALSUM=$(sha256sum "$ZIP_FILE" | awk '{printf $1}')
+  if [[ "$CHECKSUM" != "$LOCALSUM" ]]; then
+    echo 'error: SHA256 check failed! Please check your network or try again.'
+    return 1
+  fi
 }
 
 decompression() {
@@ -325,6 +329,8 @@ decompression() {
 install_file() {
   NAME="$1"
   if [[ "$NAME" == 'v2ray' ]] || [[ "$NAME" == 'v2ctl' ]]; then
+    # Make sure the directory exists (sometimes it doesn't, e.g., EdgeRouter)
+    mkdir -p '/usr/local/bin'
     install -m 755 "${TMP_DIRECTORY}/$NAME" "/usr/local/bin/$NAME"
   elif [[ "$NAME" == 'geoip.dat' ]] || [[ "$NAME" == 'geosite.dat' ]]; then
     install -m 644 "${TMP_DIRECTORY}/$NAME" "${DAT_PATH}/$NAME"
@@ -382,7 +388,7 @@ install_v2ray() {
 
 install_startup_service_file() {
   get_current_version
-  if [[ "$(echo "${CURRENT_VERSION#v}" | sed 's/-.*//' | awk -F'.' '{print $1}')" -gt "4" ]];then
+  if [[ "$(echo "${CURRENT_VERSION#v}" | sed 's/-.*//' | awk -F'.' '{print $1}')" -gt "4" ]]; then
     START_COMMAND="/usr/local/bin/v2ray run"
   else
     START_COMMAND="/usr/local/bin/v2ray"
@@ -399,8 +405,7 @@ install_startup_service_file() {
 [Service]
 ExecStart=
 ExecStart=${START_COMMAND} -confdir $JSONS_PATH" |
-      tee '/etc/systemd/system/v2ray.service.d/10-donot_touch_multi_conf.conf' > \
-        '/etc/systemd/system/v2ray@.service.d/10-donot_touch_multi_conf.conf'
+      tee '/etc/systemd/system/v2ray.service.d/10-donot_touch_multi_conf.conf' > '/etc/systemd/system/v2ray@.service.d/10-donot_touch_multi_conf.conf'
   else
     "rm" -f '/etc/systemd/system/v2ray.service.d/10-donot_touch_multi_conf.conf' \
       '/etc/systemd/system/v2ray@.service.d/10-donot_touch_multi_conf.conf'
@@ -408,14 +413,12 @@ ExecStart=${START_COMMAND} -confdir $JSONS_PATH" |
 # Or all changes you made will be lost!  # Refer: https://www.freedesktop.org/software/systemd/man/systemd.unit.html
 [Service]
 ExecStart=
-ExecStart=${START_COMMAND} -config ${JSON_PATH}/config.json" > \
-      '/etc/systemd/system/v2ray.service.d/10-donot_touch_single_conf.conf'
+ExecStart=${START_COMMAND} -config ${JSON_PATH}/config.json" > '/etc/systemd/system/v2ray.service.d/10-donot_touch_single_conf.conf'
     echo "# In case you have a good reason to do so, duplicate this file in the same directory and make your customizes there.
 # Or all changes you made will be lost!  # Refer: https://www.freedesktop.org/software/systemd/man/systemd.unit.html
 [Service]
 ExecStart=
-ExecStart=${START_COMMAND} -config ${JSON_PATH}/%i.json" > \
-      '/etc/systemd/system/v2ray@.service.d/10-donot_touch_single_conf.conf'
+ExecStart=${START_COMMAND} -config ${JSON_PATH}/%i.json" > '/etc/systemd/system/v2ray@.service.d/10-donot_touch_single_conf.conf'
   fi
   echo "info: Systemd service files have been installed successfully!"
   echo "${red}warning: ${green}The following are the actual parameters for the v2ray service startup."
